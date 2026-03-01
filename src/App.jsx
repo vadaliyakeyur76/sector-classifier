@@ -145,6 +145,7 @@ Respond ONLY with a JSON array. No markdown, no extra text.
       const errBody = await resp.json().catch(() => ({}));
       const msg = errBody?.error?.message || `HTTP ${resp.status}`;
       if (resp.status === 429) throw new Error("RATE_LIMIT:" + msg);
+      if (resp.status === 400 && msg.toLowerCase().includes("api key")) throw new Error("AUTH_ERROR:" + msg);
       throw new Error(msg);
     }
 
@@ -199,6 +200,7 @@ Respond ONLY with a JSON array. No markdown, no backticks, no extra text.
       const errBody = await resp.json().catch(() => ({}));
       const msg = errBody?.error?.message || `HTTP ${resp.status}`;
       if (resp.status === 429) throw new Error("RATE_LIMIT:" + msg);
+      if (resp.status === 400 && msg.toLowerCase().includes("api key")) throw new Error("AUTH_ERROR:" + msg);
       throw new Error(msg);
     }
 
@@ -259,9 +261,32 @@ Respond ONLY with a JSON array. No markdown, no backticks, no extra text.
           if (err.message.startsWith("RATE_LIMIT")) {
             addLog(`Rate limited. Waiting 30s...`);
             await sleep(30000);
+          } else if (err.message.startsWith("AUTH_ERROR:")) {
+            const m = err.message.replace("AUTH_ERROR:", "");
+            addLog(`Authentication Error: ${m}`);
+            setError(`Authentication Error: ${m}`);
+            setKeySet(false);
+            abortRef.current = true;
           } else {
-            addLog(`Error resolving ISINs: ${err.message}. Retrying...`);
+            addLog(`Error resolving ISINs: ${err.message}. Retrying once...`);
             await sleep(3000);
+            try {
+              const retryRes = await resolveIsinsToNames(batch);
+              retryRes.forEach(r => {
+                if (r.companyName) {
+                  mappedNames.push(r.companyName);
+                  if (r.isin) isinMapping[r.companyName] = r.isin;
+                }
+              });
+            } catch (retryErr) {
+              addLog(`Failed again. Skipping batch...`);
+              batch.forEach(c => {
+                mappedNames.push(c); // fallback
+                isinMapping[c] = c;
+              });
+            }
+            setProgress({ done: mappedNames.length, total: totalStr });
+            i += batchSize * 2;
           }
         }
       }
@@ -306,6 +331,12 @@ Respond ONLY with a JSON array. No markdown, no backticks, no extra text.
         if (err.message.startsWith("RATE_LIMIT")) {
           addLog(`Rate limited. Waiting 30s...`);
           await sleep(30000);
+        } else if (err.message.startsWith("AUTH_ERROR:")) {
+          const m = err.message.replace("AUTH_ERROR:", "");
+          addLog(`Authentication Error: ${m}`);
+          setError(`Authentication Error: ${m}`);
+          setKeySet(false);
+          abortRef.current = true;
         } else if (err.message === "JSON_PARSE_FAIL") {
           addLog(`Parse error. Trying individually...`);
           for (const comp of batch) {
